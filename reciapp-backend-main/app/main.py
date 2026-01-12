@@ -20,16 +20,18 @@ from app.services import realtime
 # Crear la aplicación FastAPI
 app = FastAPI()
 
-# ✅ CORS: permite Netlify (producción) y localhost (desarrollo)
-ALLOWED_ORIGINS = [
-    "https://reciyap.netlify.app",
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
+# --- CONFIGURACIÓN DE CORS CORREGIDA ---
+# Lista de URLs permitidas para que el registro no falle
+origins = [
+    "https://reciyap.netlify.app",       # Tu app en Netlify
+    "http://localhost:5173",             # Tu app local en puerto 5173
+    "http://localhost:3008",             # Tu app local en puerto 3008
+    "*"                                  # Permite todo (comodín para Tunnelmole)
 ]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
+    allow_origins=origins, 
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -41,7 +43,6 @@ class ConnectionManager:
         self.active_connections: Dict[str, WebSocket] = {}
 
     async def connect(self, user_id: str, websocket: WebSocket):
-        # ✅ YA NO llamamos a accept() aquí, se hace en el endpoint
         self.active_connections[user_id] = websocket
         print(f"✅ Cliente conectado: {user_id}")
 
@@ -61,7 +62,7 @@ class ConnectionManager:
     async def broadcast(self, message: dict):
         print(f"📢 Broadcasting a {len(self.active_connections)} conexiones activas")
         disconnected_users = []
-
+        
         for user_id, connection in self.active_connections.items():
             try:
                 await connection.send_text(json.dumps(message))
@@ -69,19 +70,17 @@ class ConnectionManager:
             except Exception as e:
                 print(f"   ❌ Error enviando a usuario {user_id}: {e}")
                 disconnected_users.append(user_id)
-
-        # Limpiar conexiones que fallaron
+        
         for user_id in disconnected_users:
             self.disconnect(user_id)
 
 manager = ConnectionManager()
 
-# Evento de startup para crear tablas con reintentos
+# Evento de startup para crear tablas
 @app.on_event("startup")
 async def startup_event():
     max_retries = 30
     retry_interval = 2
-
     for attempt in range(max_retries):
         try:
             Base.metadata.create_all(bind=engine)
@@ -89,15 +88,11 @@ async def startup_event():
             break
         except Exception as e:
             if attempt < max_retries - 1:
-                print(f"⏳ Esperando a la base de datos... intento {attempt + 1}/{max_retries}")
-                print(f"   Error: {str(e)}")
+                print(f"⏳ Esperando a la base de datos... intento {attempt + 1}")
                 time.sleep(retry_interval)
             else:
-                print(f"❌ No se pudo conectar a la base de datos después de {max_retries} intentos")
-                print(f"   Error final: {str(e)}")
                 raise
 
-# Healthcheck
 @app.get("/healthcheck")
 def healthcheck():
     return {"status": "ok"}
@@ -105,85 +100,38 @@ def healthcheck():
 # WebSocket endpoint
 @app.websocket("/ws/{user_id}")
 async def websocket_endpoint(websocket: WebSocket, user_id: str):
-    # ✅ PRIMERO: Aceptar la conexión ANTES de hacer cualquier otra cosa
     await websocket.accept()
-
-    # ✅ SEGUNDO: Agregar a conexiones activas
     await manager.connect(user_id, websocket)
-    print(f"👥 Conexiones activas: {len(manager.active_connections)}")
-
+    
     try:
         while True:
-            # Ahora sí podemos recibir mensajes
             data = await websocket.receive_text()
             message = json.loads(data)
             message_type = message.get("type")
 
-            print(f"📩 Mensaje recibido de {user_id}: {message_type}")
-            print(f"   Contenido: {message}")
-
             if message_type == "nueva_solicitud":
-                # Broadcast a todos los recicladores
-                broadcast_message = {
-                    "type": "nueva_solicitud",
-                    "solicitud": message.get("solicitud")
-                }
-                print(f"🔔 Broadcasting nueva solicitud a todos los usuarios")
-                await manager.broadcast(broadcast_message)
-
+                await manager.broadcast({"type": "nueva_solicitud", "solicitud": message.get("solicitud")})
             elif message_type == "aceptar_solicitud":
-                # Notificar al ciudadano que creó la solicitud
-                solicitud_id = message.get("solicitud_id")
-                await manager.broadcast({
-                    "type": "solicitud_aceptada",
-                    "solicitud_id": solicitud_id,
-                    "reciclador_id": user_id
-                })
-
+                await manager.broadcast({"type": "solicitud_aceptada", "solicitud_id": message.get("solicitud_id"), "reciclador_id": user_id})
             elif message_type == "cancelar_solicitud":
-                # Notificar a todos que la solicitud fue cancelada
-                solicitud_id = message.get("solicitud_id")
-                print(f"❌ Solicitud {solicitud_id} cancelada por usuario {user_id}")
-                await manager.broadcast({
-                    "type": "solicitud_cancelada",
-                    "solicitud_id": solicitud_id,
-                    "usuario_id": user_id
-                })
-
+                await manager.broadcast({"type": "solicitud_cancelada", "solicitud_id": message.get("solicitud_id"), "usuario_id": user_id})
             elif message_type == "completar_solicitud":
-                # ✅ NUEVO: Notificar cuando se completa una solicitud
-                solicitud_id = message.get("solicitud_id")
-                print(f"✅ Solicitud {solicitud_id} completada por reciclador {user_id}")
-                await manager.broadcast({
-                    "type": "solicitud_completada",
-                    "solicitud_id": solicitud_id,
-                    "reciclador_id": user_id
-                })
-
+                await manager.broadcast({"type": "solicitud_completada", "solicitud_id": message.get("solicitud_id"), "reciclador_id": user_id})
             elif message_type == "ubicacion_reciclador":
-                # Reenviar ubicación del reciclador a TODOS (especialmente al ciudadano)
-                solicitud_id = message.get("solicitud_id")
-                print(f"📍 Ubicación reciclador: lat={message.get('lat')}, lng={message.get('lng')}, solicitud={solicitud_id}")
                 await manager.broadcast({
                     "type": "ubicacion_reciclador",
                     "lat": message.get("lat"),
                     "lng": message.get("lng"),
-                    "solicitud_id": solicitud_id,
+                    "solicitud_id": message.get("solicitud_id"),
                     "reciclador_id": user_id
                 })
-
             elif message_type == "rechazar_solicitud":
-                solicitud_id = message.get("solicitud_id")
-                await manager.broadcast({
-                    "type": "solicitud_rechazada",
-                    "solicitud_id": solicitud_id
-                })
+                await manager.broadcast({"type": "solicitud_rechazada", "solicitud_id": message.get("solicitud_id")})
 
     except WebSocketDisconnect:
         manager.disconnect(user_id)
-        print(f"👥 Conexiones activas después de desconexión: {len(manager.active_connections)}")
     except Exception as e:
-        print(f"❌ Error en WebSocket para usuario {user_id}: {e}")
+        print(f"❌ Error en WebSocket: {e}")
         manager.disconnect(user_id)
 
 # Incluir routers
