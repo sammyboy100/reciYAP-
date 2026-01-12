@@ -1,0 +1,37 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:15
+    container_name: reciapp-db
+    restart: always
+    environment:
+      POSTGRES_DB: reciapp
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d reciapp"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  web:
+    build: .
+    container_name: reciapp-backend-web  # Cambié esto para que coincida
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./app:/code/app
+    environment:
+      DATABASE_URL: postgresql+psycopg2://postgres:postgres@reciapp-db:5432/reciapp
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: on-failure
+
+volumes:
+  postgres_data:
