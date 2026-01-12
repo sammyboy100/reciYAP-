@@ -4,16 +4,15 @@
 
 [build.environment]
   NODE_VERSION = "18"
-  # ✅ DESACTIVAR ESCANEO DE SECRETOS (necesario para Google Maps API)
   SECRETS_SCAN_SMART_DETECTION_ENABLED = "false"
 
-# Redirecciones SPA (Single Page Application)
+# SPA redirects
 [[redirects]]
   from = "/*"
   to = "/index.html"
   status = 200
 
-# Headers de seguridad
+# Security headers
 [[headers]]
   for = "/*"
   [headers.values]
