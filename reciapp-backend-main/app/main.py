@@ -19,12 +19,17 @@ from app.services import realtime
 
 # Crear la aplicación FastAPI
 app = FastAPI()
-FRONTEND_URL = os.getenv("FRONTEND_URL", "*")
 
-# Configurar CORS para FastAPI
+# ✅ CORS: permite Netlify (producción) y localhost (desarrollo)
+ALLOWED_ORIGINS = [
+    "https://reciyap.netlify.app",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"] if FRONTEND_URL == "*" else [FRONTEND_URL],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -56,7 +61,7 @@ class ConnectionManager:
     async def broadcast(self, message: dict):
         print(f"📢 Broadcasting a {len(self.active_connections)} conexiones activas")
         disconnected_users = []
-        
+
         for user_id, connection in self.active_connections.items():
             try:
                 await connection.send_text(json.dumps(message))
@@ -64,7 +69,7 @@ class ConnectionManager:
             except Exception as e:
                 print(f"   ❌ Error enviando a usuario {user_id}: {e}")
                 disconnected_users.append(user_id)
-        
+
         # Limpiar conexiones que fallaron
         for user_id in disconnected_users:
             self.disconnect(user_id)
@@ -76,7 +81,7 @@ manager = ConnectionManager()
 async def startup_event():
     max_retries = 30
     retry_interval = 2
-    
+
     for attempt in range(max_retries):
         try:
             Base.metadata.create_all(bind=engine)
@@ -102,11 +107,11 @@ def healthcheck():
 async def websocket_endpoint(websocket: WebSocket, user_id: str):
     # ✅ PRIMERO: Aceptar la conexión ANTES de hacer cualquier otra cosa
     await websocket.accept()
-    
+
     # ✅ SEGUNDO: Agregar a conexiones activas
     await manager.connect(user_id, websocket)
     print(f"👥 Conexiones activas: {len(manager.active_connections)}")
-    
+
     try:
         while True:
             # Ahora sí podemos recibir mensajes
