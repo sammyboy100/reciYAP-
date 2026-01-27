@@ -2,25 +2,59 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ✅ Reset global: Esto elimina el espacio blanco del navegador */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
 
 :root { color-scheme: light; }
-body { @apply bg-gray-50 text-gray-900; }
 
-/* ✅ Solo ocultar el panel de leaflet routing */
+body { 
+  @apply bg-gray-50 text-gray-900; 
+  margin: 0;
+  padding: 0;
+}
+
+/* ✅ Animación de Ticker Infinito */
+@keyframes marquee {
+  0% { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+
+.animate-marquee {
+  display: inline-block;
+  animation: marquee 25s linear infinite;
+}
+
+.hover\:pause:hover {
+  animation-play-state: paused;
+}
+
+/* ✅ Extras para Mapas (Leaflet) */
 .leaflet-routing-container {
   display: none !important;
 }
 
-/* ✅ Animación para ruta estilo Google Maps */
 @keyframes route-pulse {
-  0%, 100% {
-    opacity: 0.7;
-  }
-  50% {
-    opacity: 1;
-  }
+  0%, 100% { opacity: 0.7; }
+  50% { opacity: 1; }
 }
 
 .leaflet-container {
   font-family: inherit;
+}
+@keyframes marquee {
+  0% { transform: translateX(100%); }
+  100% { transform: translateX(-100%); }
+}
+
+.animate-marquee {
+  display: inline-flex;
+  animation: marquee 40s linear infinite;
+}
+
+.animate-marquee:hover {
+  animation-play-state: paused;
 }

@@ -1,48 +1,47 @@
-import os
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.middleware.cors import CORSMiddleware
 import time
 import json
+import random
 from typing import Dict
 
-# Importaciones de modelos y base de datos
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends
+from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.orm import Session
+
 from app.models.base import Base
-from app.db.session import engine
-from app import models
-from app.models import user, solicitud, servicio, evidencia, wallet
+from app.db.session import engine, SessionLocal
+from app.models.user import Usuario 
 
 # Importaciones de rutas
-from app.api.v1 import routes
-from app.api.v1 import routes_auth
+from app.api.v1 import routes, routes_auth
 from app.api.v1.routes import router as api_router
 from app.services import realtime
 
-# Crear la aplicación FastAPI
-app = FastAPI()
+# --- DB ---
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
-# --- CONFIGURACIÓN DE CORS CORREGIDA ---
-# Lista de URLs permitidas para que el registro no falle
-origins = [
-    "https://reciyap.netlify.app",       # Tu app en Netlify
-    "http://localhost:5173",             # Tu app local en puerto 5173
-    "http://localhost:3008",             # Tu app local en puerto 3008
-    "*"                                  # Permite todo (comodín para Tunnelmole)
-]
+app = FastAPI(title="ReciApp API")
 
+# --- CORS FLEXIBLE (Desarrollo) ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins, 
+    allow_origins=["*"],  
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Gestor de conexiones WebSocket
+# --- WEBSOCKETS ---
 class ConnectionManager:
     def __init__(self):
         self.active_connections: Dict[str, WebSocket] = {}
 
     async def connect(self, user_id: str, websocket: WebSocket):
+        await websocket.accept()
         self.active_connections[user_id] = websocket
         print(f"✅ Cliente conectado: {user_id}")
 
@@ -51,90 +50,89 @@ class ConnectionManager:
             del self.active_connections[user_id]
             print(f"❌ Cliente desconectado: {user_id}")
 
-    async def send_personal_message(self, message: dict, user_id: str):
-        if user_id in self.active_connections:
-            try:
-                await self.active_connections[user_id].send_text(json.dumps(message))
-            except Exception as e:
-                print(f"❌ Error enviando mensaje a {user_id}: {e}")
-                self.disconnect(user_id)
-
     async def broadcast(self, message: dict):
-        print(f"📢 Broadcasting a {len(self.active_connections)} conexiones activas")
-        disconnected_users = []
-        
-        for user_id, connection in self.active_connections.items():
+        for _, connection in self.active_connections.items():
             try:
                 await connection.send_text(json.dumps(message))
-                print(f"   ✅ Mensaje enviado a usuario {user_id}")
-            except Exception as e:
-                print(f"   ❌ Error enviando a usuario {user_id}: {e}")
-                disconnected_users.append(user_id)
-        
-        for user_id in disconnected_users:
-            self.disconnect(user_id)
+            except:
+                pass
 
 manager = ConnectionManager()
 
-# Evento de startup para crear tablas
 @app.on_event("startup")
 async def startup_event():
     max_retries = 30
-    retry_interval = 2
-    for attempt in range(max_retries):
+    for _ in range(max_retries):
         try:
             Base.metadata.create_all(bind=engine)
             print("✅ Tablas creadas exitosamente")
             break
-        except Exception as e:
-            if attempt < max_retries - 1:
-                print(f"⏳ Esperando a la base de datos... intento {attempt + 1}")
-                time.sleep(retry_interval)
-            else:
-                raise
+        except Exception:
+            time.sleep(2)
+
+# --- ENDPOINTS ---
 
 @app.get("/healthcheck")
 def healthcheck():
     return {"status": "ok"}
 
-# WebSocket endpoint
+# 🤖 INTELIGENCIA DE MERCADO: Precios Dinámicos
+@app.get("/api/precios")
+def get_precios_ai():
+    """
+    Simula una IA analizando el mercado internacional de commodities
+    para ajustar los precios de ReciYAP en tiempo real.
+    """
+    materiales = [
+        {"material": "Papel Blanco", "base": 0.85},
+        {"material": "Plástico PET", "base": 1.20},
+        {"material": "Cartón", "base": 0.55},
+        {"material": "Chatarra", "base": 1.10},
+        {"material": "Vidrio", "base": 0.30},
+    ]
+    
+    response = []
+    for item in materiales:
+        # La IA calcula una variación aleatoria de +/- 5%
+        variacion = random.uniform(-0.05, 0.05)
+        nuevo_precio = round(item["base"] * (1 + variacion), 2)
+        
+        # Lógica de tendencia
+        if variacion > 0.01:
+            tendencia = "up"
+        elif variacion < -0.01:
+            tendencia = "down"
+        else:
+            tendencia = "stable"
+        
+        response.append({
+            "material": item["material"],
+            "precio": nuevo_precio,
+            "variacion": f"{variacion:+.2%}",
+            "tendencia": tendencia
+        })
+    return response
+
+# ✅ ADMIN: lista usuarios por rol
+@app.get("/api/admin/usuarios", tags=["Admin"])
+def obtener_usuarios(rol: str, db: Session = Depends(get_db)):
+    usuarios = db.query(Usuario).filter(Usuario.rol == rol).all()
+    return [
+        {"id": u.id, "nombre": u.nombre, "correo": u.correo, "rol": u.rol}
+        for u in usuarios
+    ]
+
+# --- WEBSOCKET ENDPOINT ---
 @app.websocket("/ws/{user_id}")
 async def websocket_endpoint(websocket: WebSocket, user_id: str):
-    await websocket.accept()
     await manager.connect(user_id, websocket)
-    
     try:
         while True:
-            data = await websocket.receive_text()
-            message = json.loads(data)
-            message_type = message.get("type")
-
-            if message_type == "nueva_solicitud":
-                await manager.broadcast({"type": "nueva_solicitud", "solicitud": message.get("solicitud")})
-            elif message_type == "aceptar_solicitud":
-                await manager.broadcast({"type": "solicitud_aceptada", "solicitud_id": message.get("solicitud_id"), "reciclador_id": user_id})
-            elif message_type == "cancelar_solicitud":
-                await manager.broadcast({"type": "solicitud_cancelada", "solicitud_id": message.get("solicitud_id"), "usuario_id": user_id})
-            elif message_type == "completar_solicitud":
-                await manager.broadcast({"type": "solicitud_completada", "solicitud_id": message.get("solicitud_id"), "reciclador_id": user_id})
-            elif message_type == "ubicacion_reciclador":
-                await manager.broadcast({
-                    "type": "ubicacion_reciclador",
-                    "lat": message.get("lat"),
-                    "lng": message.get("lng"),
-                    "solicitud_id": message.get("solicitud_id"),
-                    "reciclador_id": user_id
-                })
-            elif message_type == "rechazar_solicitud":
-                await manager.broadcast({"type": "solicitud_rechazada", "solicitud_id": message.get("solicitud_id")})
-
+            await websocket.receive_text()
     except WebSocketDisconnect:
         manager.disconnect(user_id)
-    except Exception as e:
-        print(f"❌ Error en WebSocket: {e}")
-        manager.disconnect(user_id)
 
-# Incluir routers
+# Routers existentes
 app.include_router(routes_auth.router, prefix="/auth", tags=["Autenticación"])
 app.include_router(routes.router, prefix="/api", tags=["Usuarios y Recursos"])
 app.include_router(api_router)
